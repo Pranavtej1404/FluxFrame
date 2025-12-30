@@ -31,17 +31,105 @@ def log(job_id, message):
 
 def handle_preprocess(task):
     job_id = task['job_id']
-    log(job_id, "Started Preprocessing")
+    video_id = task['video_id']
+    file_path = task['file_path']
     
-    # Simulate FFmpeg extraction
-    time.sleep(2) # Fake work
+    log(job_id, "Started Preprocessing: Frame Extraction")
     
-    # Update Job
-    db.jobs.update_one({"_id": job_id}, {"$set": {"status": "preprocessed"}})
-    
-    # Push to Inference
-    redis_client.rpush(QUEUE_INFERENCE, json.dumps(task))
-    log(job_id, "Finished Preprocessing -> Pushed to Inference")
+    try:
+        import ffmpeg
+        
+        # 1. Setup paths
+        base_dir = "/media"
+        frames_dir = f"{base_dir}/frames/{job_id}"
+        audio_path = f"{base_dir}/audio/{job_id}.wav"
+        
+        os.makedirs(frames_dir, exist_ok=True)
+        os.makedirs(f"{base_dir}/audio", exist_ok=True)
+        
+        # 2. Probe Metadata
+        probe = ffmpeg.probe(file_path)
+        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+        
+        width = int(video_stream['width'])
+        height = int(video_stream['height'])
+        
+        # Parse FPS (e.g., "30/1" or "30")
+        r_frame_rate = video_stream['r_frame_rate']
+        num, den = map(int, r_frame_rate.split('/'))
+        fps = num / den if den > 0 else 30.0
+        
+        # 3. Extract Frames
+        log(job_id, f"Extracting frames from {file_path} to {frames_dir}")
+        (
+            ffmpeg
+            .input(file_path)
+            .output(f"{frames_dir}/frame_%06d.png")
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        
+        # 4. Extract Audio (if exists)
+        audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
+        has_audio = False
+        if audio_stream:
+            log(job_id, "Extracting audio")
+            (
+                ffmpeg
+                .input(file_path)
+                .output(audio_path)
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+            has_audio = True
+            
+        # 5. Count extracted frames
+        frame_files = sorted(os.listdir(frames_dir))
+        frame_count = len(frame_files)
+        
+        # 6. Update Video Metadata in DB
+        db.videos.update_one(
+            {"_id": video_id},
+            {"$set": {
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "total_frames": frame_count,
+                "has_audio": has_audio,
+                "audio_path": audio_path if has_audio else None
+            }}
+        )
+        
+        # 7. Update Job Status & Manifest
+        # We don't need a massive manifest in DB yet, just reference the folder.
+        # But per requirements: "Generate Preprocessing Manifest"
+        manifest = {
+            "job_id": job_id,
+            "frame_count": frame_count,
+            "fps": fps,
+            "frame_path_template": f"{frames_dir}/frame_%06d.png"
+        }
+        
+        db.jobs.update_one(
+            {"_id": job_id}, 
+            {
+                "$set": {
+                    "status": "preprocessed", 
+                    "manifest": manifest
+                },
+                "$push": {"history": {"status": "frames_extracted", "timestamp": datetime.utcnow()}}
+            }
+        )
+        
+        # Push to Inference
+        redis_client.rpush(QUEUE_INFERENCE, json.dumps(task))
+        log(job_id, "Finished Preprocessing -> Pushed to Inference")
+        
+    except ffmpeg.Error as e:
+        error_log = e.stderr.decode('utf8')
+        log(job_id, f"FFmpeg Error: {error_log}")
+        db.jobs.update_one({"_id": job_id}, {"$set": {"status": "failed", "error": error_log}})
+    except Exception as e:
+        log(job_id, f"Preprocessing Error: {str(e)}")
+        db.jobs.update_one({"_id": job_id}, {"$set": {"status": "failed", "error": str(e)}})
 
 def handle_inference(task):
     job_id = task['job_id']
