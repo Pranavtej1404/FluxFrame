@@ -33,6 +33,7 @@ services:
       - redis
     volumes:
       - ./backend/gateway:/app
+      - media_volume:/media
 
   # Worker (Consumer)
   worker:
@@ -50,6 +51,7 @@ services:
       - gateway # Wait for gateway init (optional, but good for logical flow)
     volumes:
       - ./backend/worker:/app
+      - media_volume:/media
 
   # Model Service: Base Diffusion
   model-base:
@@ -90,3 +92,4 @@ services:
 
 volumes:
   mongo_data:
+  media_volume:

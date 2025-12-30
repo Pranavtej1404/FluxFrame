@@ -5,3 +5,4 @@ redis
 python-multipart
 pydantic
 pydantic-settings
+ffmpeg-python

@@ -58,27 +58,65 @@ async def upload_video(
     cfg_scale: float = 7.5,
     interp_frames: int = 2
 ):
+    # --- validation ---
+    ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
+    MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file format. Allowed: {ALLOWED_EXTENSIONS}")
+
     # 1. Generate IDs
     video_id = str(uuid.uuid4())
     job_id = str(uuid.uuid4())
+
+    # 2. Save file to shared volume
+    upload_dir = "/media/uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    file_location = f"{upload_dir}/{video_id}_{file.filename}"
     
-    # 2. Save file temporarily (GridFS in real prod, local tmp here for simplicity)
-    os.makedirs("/tmp/uploads", exist_ok=True)
-    file_location = f"/tmp/uploads/{video_id}_{file.filename}"
+    # Read and save in chunks to check size
+    size = 0
     with open(file_location, "wb+") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # 3. Create Video Record in Mongo
+        while chunk := await file.read(1024 * 1024): # 1MB chunks
+            size += len(chunk)
+            if size > MAX_FILE_SIZE:
+                buffer.close()
+                os.remove(file_location)
+                raise HTTPException(status_code=400, detail="File too large (Max 500MB)")
+            buffer.write(chunk)
+            
+    # 3. Validate Video with FFmpeg
+    try:
+        import ffmpeg
+        probe = ffmpeg.probe(file_location)
+        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+        if not video_stream:
+            os.remove(file_location)
+            raise HTTPException(status_code=400, detail="Invalid video file: No video stream found")
+        
+        # Check FPS (some streams have r_frame_rate like '30/1')
+        r_frame_rate = video_stream.get('r_frame_rate')
+        # Simple validation: just ensure we can probe it. Advanced logic can parse FPS.
+        
+    except Exception as e:
+        if os.path.exists(file_location):
+            os.remove(file_location)
+        raise HTTPException(status_code=400, detail=f"Invalid video file: {str(e)}")
+
+    # 4. Create Video Record in Mongo
     video_doc = {
         "_id": video_id,
         "filename": file.filename,
         "file_path": file_location,
+        "size_bytes": size,
+        "content_type": file.content_type,
         "status": "uploaded",
         "created_at": datetime.utcnow()
     }
     await db.videos.insert_one(video_doc)
     
-    # 4. Create Job Record
+    # 5. Create Job Record
     job_doc = {
         "_id": job_id,
         "video_id": video_id,
@@ -89,12 +127,12 @@ async def upload_video(
         },
         "created_at": datetime.utcnow(),
         "history": [
-            {"status": "queued", "timestamp": datetime.utcnow()}
+            {"status": "queued", "timestamp": datetime.utcnow(), "details": "Job created and validated"}
         ]
     }
     await db.jobs.insert_one(job_doc)
     
-    # 5. Push to Redis (Preprocess Queue)
+    # 6. Push to Redis (Preprocess Queue)
     task_payload = json.dumps({"job_id": job_id, "video_id": video_id, "file_path": file_location})
     redis_client.rpush(QUEUE_PREPROCESS, task_payload)
     
