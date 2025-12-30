@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Base Infrastructure
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: always
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+  # Backend Gateway (Orchestrator)
+  gateway:
+    build:
+      context: ./backend/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URL=mongodb://mongo:27017
+      - REDIS_URL=redis://redis:6379
+      - MODEL_BASE_URL=http://model-base:8001
+      - MODEL_SR_URL=http://model-super-res:8002
+    depends_on:
+      - mongo
+      - redis
+    volumes:
+      - ./backend/gateway:/app
+
+  # Worker (Consumer)
+  worker:
+    build:
+      context: ./backend/worker
+      dockerfile: Dockerfile
+    environment:
+      - MONGO_URL=mongodb://mongo:27017
+      - REDIS_URL=redis://redis:6379
+      - MODEL_BASE_URL=http://model-base:8001
+      - MODEL_SR_URL=http://model-super-res:8002
+    depends_on:
+      - mongo
+      - redis
+      - gateway # Wait for gateway init (optional, but good for logical flow)
+    volumes:
+      - ./backend/worker:/app
+
+  # Model Service: Base Diffusion
+  model-base:
+    build:
+      context: ./model-services/base-diffusion
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+    volumes:
+      - ./model-services/base-diffusion:/app
+
+  # Model Service: Super Resolution
+  model-super-res:
+    build:
+      context: ./model-services/super-resolution
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+    volumes:
+      - ./model-services/super-resolution:/app
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+
+    depends_on:
+      - gateway
+
+volumes:
+  mongo_data:
