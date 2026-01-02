@@ -63,7 +63,7 @@ services:
     environment:
       - PORT=8001
       - MONGO_URL=mongodb://mongo:27017
-      - GEMINI_API_KEY=AIzaSyCSqz7hevy9t6q2Of1i1ndqiZhgNnFUTfI
+      - GEMINI_API_KEY=//
     volumes:
       - ./model-services/base-diffusion:/app
 
