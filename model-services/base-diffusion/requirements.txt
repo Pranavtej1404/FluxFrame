@@ -1,2 +1,7 @@
 fastapi
 uvicorn
+google-generativeai
+pymongo
+python-multipart
+Pillow
+requests
