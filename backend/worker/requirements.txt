@@ -2,3 +2,5 @@ redis
 pymongo
 requests
 ffmpeg-python
+opencv-python-headless
+numpy

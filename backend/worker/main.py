@@ -85,7 +85,12 @@ def handle_preprocess(task):
         frame_files = sorted(os.listdir(frames_dir))
         frame_count = len(frame_files)
         
-        # 6. Update Video Metadata in DB
+        # 6. Advanced Preprocessing Analysis
+        import preprocessing
+        log(job_id, "Running advanced preprocessing (scene detection, motion analysis)...")
+        analysis_result = preprocessing.analyze_video(frames_dir, fps=fps)
+        
+        # 7. Update Video Metadata in DB
         db.videos.update_one(
             {"_id": video_id},
             {"$set": {
@@ -94,18 +99,19 @@ def handle_preprocess(task):
                 "height": height,
                 "total_frames": frame_count,
                 "has_audio": has_audio,
-                "audio_path": audio_path if has_audio else None
+                "audio_path": audio_path if has_audio else None,
+                "analysis": analysis_result # Store dense analysis data here
             }}
         )
         
-        # 7. Update Job Status & Manifest
-        # We don't need a massive manifest in DB yet, just reference the folder.
-        # But per requirements: "Generate Preprocessing Manifest"
+        # 8. Update Job Status & Manifest
         manifest = {
             "job_id": job_id,
             "frame_count": frame_count,
             "fps": fps,
-            "frame_path_template": f"{frames_dir}/frame_%06d.png"
+            "frame_path_template": f"{frames_dir}/frame_%06d.png",
+            "shot_segments": analysis_result["shot_segments"] if analysis_result else [],
+            "interpolation_params": analysis_result["interpolation_params"] if analysis_result else {}
         }
         
         db.jobs.update_one(
@@ -113,9 +119,12 @@ def handle_preprocess(task):
             {
                 "$set": {
                     "status": "preprocessed", 
-                    "manifest": manifest
+                    "manifest": manifest,
+                    "processing_stats": {
+                        "motion_score": analysis_result["motion_analysis"]["average_score"] if analysis_result else 0
+                    }
                 },
-                "$push": {"history": {"status": "frames_extracted", "timestamp": datetime.utcnow()}}
+                "$push": {"history": {"status": "frames_extracted_and_analyzed", "timestamp": datetime.utcnow()}}
             }
         )
         
